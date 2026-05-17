@@ -1,0 +1,392 @@
+
+import React, { useState, useEffect, useRef } from 'react';
+import { RefreshCw, TrendingUp, TrendingDown } from 'lucide-react';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import axios from 'axios';
+
+interface CurrencyRate {
+  symbol: string;
+  name: string;
+  rate: number;
+  satoshisPerUnit: number;
+  flag: string;
+}
+
+type Direction = 'up' | 'down' | null;
+
+const FizxLogo = ({ className }: { className?: string }) => (
+  <svg width="16" height="16" viewBox="0 0 4 4" fill="none" xmlns="http://www.w3.org/2000/svg" className={className ?? 'shrink-0'} style={{ imageRendering: 'pixelated' }}>
+    <rect x="0" y="0" width="1" height="1" fill="#34d399"/>
+    <rect x="1" y="0" width="1" height="1" fill="#a78bfa"/>
+    <rect x="2" y="0" width="1" height="1" fill="#34d399"/>
+    <rect x="3" y="0" width="1" height="1" fill="#a78bfa"/>
+    <rect x="0" y="1" width="1" height="1" fill="#a78bfa"/>
+    <rect x="1" y="1" width="1" height="1" fill="#34d399"/>
+    <rect x="2" y="1" width="1" height="1" fill="#a78bfa"/>
+    <rect x="3" y="1" width="1" height="1" fill="#34d399"/>
+    <rect x="0" y="2" width="1" height="1" fill="#34d399"/>
+    <rect x="1" y="2" width="1" height="1" fill="#a78bfa"/>
+    <rect x="2" y="2" width="1" height="1" fill="#34d399"/>
+    <rect x="3" y="2" width="1" height="1" fill="#a78bfa"/>
+    <rect x="0" y="3" width="1" height="1" fill="#a78bfa"/>
+    <rect x="1" y="3" width="1" height="1" fill="#34d399"/>
+    <rect x="2" y="3" width="1" height="1" fill="#a78bfa"/>
+    <rect x="3" y="3" width="1" height="1" fill="#34d399"/>
+  </svg>
+);
+
+const REFRESH_MS = 21000;
+const SQUARE_COUNT = 21;
+
+function lerpHex(
+  a: [number, number, number],
+  b: [number, number, number],
+  t: number
+): string {
+  const r = Math.round(a[0] + (b[0] - a[0]) * t);
+  const g = Math.round(a[1] + (b[1] - a[1]) * t);
+  const bl = Math.round(a[2] + (b[2] - a[2]) * t);
+  return `rgb(${r},${g},${bl})`;
+}
+
+const EMERALD: [number, number, number] = [52, 211, 153];
+const PURPLE:  [number, number, number] = [167, 139, 250];
+
+const SQUARE_COLORS = Array.from({ length: SQUARE_COUNT }, (_, i) => {
+  const t = i < 10 ? i / 10 : (SQUARE_COUNT - 1 - i) / 10;
+  return lerpHex(EMERALD, PURPLE, t);
+});
+
+const SQUARE_DIM = '#161e2e';
+
+const BitcoinConverter = () => {
+  const [rates, setRates] = useState<CurrencyRate[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [justRefreshed, setJustRefreshed] = useState(false);
+  const [changed, setChanged] = useState<Record<string, Direction>>({});
+  const [tick, setTick] = useState(0);
+  const prevRates = useRef<Record<string, number>>({});
+
+  // bitview state — USD only
+  const [bitviewSats, setBitviewSats] = useState<number | null>(null);
+  const [bitviewFetchedAt, setBitviewFetchedAt] = useState<Date | null>(null);
+  const [bitviewError, setBitviewError] = useState<string | null>(null);
+  const [bitviewRefreshed, setBitviewRefreshed] = useState(false);
+
+  const currencies = [
+    { symbol: 'USD', name: 'US Dollar', flag: '🇺🇸' },
+    { symbol: 'EUR', name: 'Euro', flag: '🇪🇺' },
+    { symbol: 'GBP', name: 'British Pound', flag: '🇬🇧' },
+    { symbol: 'JPY', name: 'Japanese Yen', flag: '🇯🇵' },
+    { symbol: 'CAD', name: 'Canadian Dollar', flag: '🇨🇦' },
+    { symbol: 'AUD', name: 'Australian Dollar', flag: '🇦🇺' },
+    { symbol: 'CHF', name: 'Swiss Franc', flag: '🇨🇭' },
+    { symbol: 'CNY', name: 'Chinese Yuan', flag: '🇨🇳' },
+  ];
+
+  const fetchCoinGecko = async () => {
+    try {
+      setError(null);
+      const response = await axios.get(
+        'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd,eur,gbp,jpy,cad,aud,chf,cny'
+      );
+      const bitcoinPrices = response.data.bitcoin;
+      const SATOSHIS_PER_BITCOIN = 100000000;
+      const newRates: CurrencyRate[] = currencies.map(currency => {
+        const price = bitcoinPrices[currency.symbol.toLowerCase()];
+        const satoshisPerUnit = price ? Math.round(SATOSHIS_PER_BITCOIN / price) : 0;
+        return { symbol: currency.symbol, name: currency.name, rate: price || 0, satoshisPerUnit, flag: currency.flag };
+      });
+
+      const directions: Record<string, Direction> = {};
+      newRates.forEach(r => {
+        const prev = prevRates.current[r.symbol];
+        if (prev !== undefined && r.satoshisPerUnit !== prev) {
+          directions[r.symbol] = r.satoshisPerUnit > prev ? 'up' : 'down';
+        }
+        prevRates.current[r.symbol] = r.satoshisPerUnit;
+      });
+
+      setRates(newRates);
+      setLastUpdated(new Date());
+      setJustRefreshed(true);
+      setTick(0);
+      setTimeout(() => setJustRefreshed(false), 2000);
+
+      if (Object.keys(directions).length > 0) {
+        setChanged(directions);
+        setTimeout(() => setChanged({}), 1800);
+      }
+    } catch (err) {
+      console.error('Error fetching CoinGecko rates:', err);
+      setError('CoinGecko unavailable');
+    }
+  };
+
+  const fetchBitview = async () => {
+    try {
+      setBitviewError(null);
+      // bitview returns { time: unixTs, USD: btcPriceInUsd }
+      const response = await axios.get('https://bitview.space/api/v1/prices');
+      const usdPrice = response.data?.USD;
+      if (typeof usdPrice === 'number' && usdPrice > 0) {
+        const sats = Math.round(100_000_000 / usdPrice);
+        setBitviewSats(sats);
+        setBitviewFetchedAt(new Date());
+        setBitviewRefreshed(true);
+        setTimeout(() => setBitviewRefreshed(false), 2000);
+      }
+    } catch (err) {
+      console.error('Error fetching bitview:', err);
+      setBitviewError('bitview unavailable');
+    }
+  };
+
+  const fetchAll = async () => {
+    setLoading(true);
+    await Promise.allSettled([fetchCoinGecko(), fetchBitview()]);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    fetchAll();
+    const fetchInterval = setInterval(fetchAll, REFRESH_MS);
+    const tickInterval = setInterval(() => {
+      setTick(t => (t < SQUARE_COUNT ? t + 1 : 0));
+    }, 1000);
+    return () => {
+      clearInterval(fetchInterval);
+      clearInterval(tickInterval);
+    };
+  }, []);
+
+  // Which source is more recently fetched?
+  const cgTime = lastUpdated?.getTime() ?? 0;
+  const bvTime = bitviewFetchedAt?.getTime() ?? 0;
+  const activeSource: 'coingecko' | 'bitview' = cgTime >= bvTime ? 'coingecko' : 'bitview';
+  const mostRecentAt = cgTime >= bvTime ? lastUpdated : bitviewFetchedAt;
+
+  const formatNumber = (num: number) => new Intl.NumberFormat('en-US').format(num);
+
+  const formatPrice = (price: number, currency: string) =>
+    new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency,
+      minimumFractionDigits: currency === 'JPY' ? 0 : 2,
+    }).format(price);
+
+  return (
+    <div className="min-h-screen bg-background flex flex-col">
+
+      {/* Nav */}
+      <nav className="border-b border-border px-6 py-4">
+        <div className="max-w-5xl mx-auto flex items-center justify-between">
+          <a href="https://fizx.uk" className="flex items-center gap-2 font-mono text-sm" aria-label="fizx.uk">
+            <FizxLogo />
+            <span className="bg-gradient-to-r from-[#34d399] via-[#a78bfa] to-[#34d399] bg-clip-text text-transparent font-bold">fizx</span>
+            <span className="text-muted-foreground">.uk</span>
+            <span className="text-muted-foreground/40 ml-1">/ glimpse</span>
+          </a>
+        </div>
+      </nav>
+
+      <div className="flex-1 max-w-5xl mx-auto w-full px-6 py-12">
+
+        {/* Header */}
+        <div className="mb-10">
+
+          {/* Title row */}
+          <div className="flex items-center gap-3 mb-2">
+            <FizxLogo className="h-9 w-9 shrink-0" />
+            <h1 className="text-3xl font-bold tracking-tight">
+              <span className="bg-gradient-to-r from-[#34d399] via-[#a78bfa] to-[#34d399] bg-clip-text text-transparent">
+                glimpse
+              </span>
+            </h1>
+            <div className="flex-1" />
+            <button
+              onClick={fetchAll}
+              disabled={loading}
+              className="shrink-0 p-2 hover:bg-primary/10 disabled:opacity-40 text-primary transition-colors"
+              aria-label="Refresh rates"
+            >
+              <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+            </button>
+          </div>
+
+          {/* 21-square countdown strip */}
+          <div className="flex items-center gap-[3px] mb-3">
+            {SQUARE_COLORS.map((litColor, i) => (
+              <div
+                key={i}
+                className="flex-1 h-[10px] transition-colors duration-300"
+                style={{ backgroundColor: i < tick ? litColor : SQUARE_DIM }}
+              />
+            ))}
+          </div>
+
+          <p className="text-muted-foreground text-sm">
+            Real-time Bitcoin conversion rates in satoshis per currency unit
+          </p>
+
+          {/* Source badges + timestamp */}
+          <div className="flex items-center gap-3 mt-1 flex-wrap">
+            {mostRecentAt && (
+              <span className="text-muted-foreground/50 text-xs font-mono">
+                Updated {mostRecentAt.toLocaleTimeString()}
+              </span>
+            )}
+
+            {/* CoinGecko badge */}
+            {error ? (
+              <span className="text-xs font-mono text-amber-500/70">⚠ {error}</span>
+            ) : lastUpdated ? (
+              <span className={`text-xs font-mono px-1.5 py-0.5 border transition-all duration-500
+                ${justRefreshed
+                  ? 'text-primary border-primary/50 bg-primary/10'
+                  : activeSource === 'coingecko'
+                  ? 'text-primary/60 border-primary/20'
+                  : 'text-muted-foreground/40 border-border'}`}>
+                CoinGecko
+              </span>
+            ) : null}
+
+            {/* bitview badge */}
+            {bitviewError ? (
+              <span className="text-xs font-mono text-amber-500/40">⚠ {bitviewError}</span>
+            ) : bitviewFetchedAt ? (
+              <span className={`text-xs font-mono px-1.5 py-0.5 border transition-all duration-500
+                ${bitviewRefreshed
+                  ? 'text-accent border-accent/50 bg-accent/10'
+                  : activeSource === 'bitview'
+                  ? 'text-accent/60 border-accent/20'
+                  : 'text-muted-foreground/40 border-border'}`}>
+                bitview
+              </span>
+            ) : null}
+          </div>
+        </div>
+
+        {/* Currency Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+          {rates.map((rate) => {
+            const dir = changed[rate.symbol] ?? null;
+            const isUsd = rate.symbol === 'USD';
+            const hasBothUsd = isUsd && bitviewSats !== null && rate.satoshisPerUnit > 0;
+
+            return (
+              <Card
+                key={rate.symbol}
+                className={`bg-card border transition-all duration-500
+                  ${dir === 'up'   ? 'border-primary shadow-lg shadow-primary/20' :
+                    dir === 'down' ? 'border-accent/70 shadow-lg shadow-accent/20' :
+                    'border-border hover:border-primary/40'}
+                  rounded-none`}
+              >
+                <CardHeader className="pb-3">
+                  <CardTitle className="flex items-center justify-between text-card-foreground">
+                    <div className="flex items-center gap-2">
+                      <span className="text-2xl">{rate.flag}</span>
+                      <span className="font-mono font-bold">{rate.symbol}</span>
+                    </div>
+                    {dir === 'up'   ? <TrendingUp   className="h-4 w-4 text-primary transition-all" /> :
+                     dir === 'down' ? <TrendingDown  className="h-4 w-4 text-accent transition-all" /> :
+                                      <TrendingUp   className="h-4 w-4 text-muted-foreground/30" />}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <div>
+                    <p className="text-muted-foreground text-sm">{rate.name}</p>
+                    <p className="text-foreground text-lg font-mono">
+                      {rate.rate > 0 ? formatPrice(rate.rate, rate.symbol) : 'Loading...'}
+                    </p>
+                  </div>
+                  <div className="border-t border-border pt-3">
+                    <p className="text-muted-foreground text-xs font-mono uppercase tracking-wider mb-1">
+                      sats per 1 {rate.symbol}
+                    </p>
+                    <p className={`text-xl font-bold font-mono transition-colors duration-500
+                      ${dir === 'up' ? 'text-primary' : dir === 'down' ? 'text-accent' : 'text-primary'}`}>
+                      {rate.satoshisPerUnit > 0 ? formatNumber(rate.satoshisPerUnit) : 'Loading...'}
+                      <span className="text-sm text-muted-foreground ml-1">sats</span>
+                    </p>
+
+                    {/* bitview comparison for USD */}
+                    {hasBothUsd && (
+                      <div className="mt-2 pt-2 border-t border-border/40 flex items-center justify-between">
+                        <span className={`text-[10px] font-mono px-1 border transition-colors duration-500
+                          ${bitviewRefreshed ? 'text-accent border-accent/40' : 'text-muted-foreground/40 border-border/40'}`}>
+                          bitview
+                        </span>
+                        <span className="text-[11px] font-mono text-muted-foreground/60">
+                          {formatNumber(bitviewSats!)} sats
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })}
+
+          {/* Fallback USD card when CoinGecko is down but bitview has data */}
+          {error && bitviewSats !== null && rates.length === 0 && (
+            <Card className="bg-card border border-border rounded-none hover:border-primary/40 transition-all duration-500">
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center justify-between text-card-foreground">
+                  <div className="flex items-center gap-2">
+                    <span className="text-2xl">🇺🇸</span>
+                    <span className="font-mono font-bold">USD</span>
+                  </div>
+                  <TrendingUp className="h-4 w-4 text-muted-foreground/30" />
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div>
+                  <p className="text-muted-foreground text-sm">US Dollar</p>
+                  <p className="text-muted-foreground/40 text-sm font-mono">CoinGecko unavailable</p>
+                </div>
+                <div className="border-t border-border pt-3">
+                  <p className="text-muted-foreground text-xs font-mono uppercase tracking-wider mb-1">
+                    sats per 1 USD
+                  </p>
+                  <p className="text-xl font-bold font-mono text-accent">
+                    {formatNumber(bitviewSats)}
+                    <span className="text-sm text-muted-foreground ml-1">sats</span>
+                  </p>
+                  <span className="text-[10px] font-mono text-accent/60">via bitview</span>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+        </div>
+
+      </div>
+
+      {/* Footer */}
+      <footer className="border-t border-border px-6 py-5">
+        <div className="max-w-5xl mx-auto flex flex-wrap items-center justify-between gap-y-2 text-xs text-muted-foreground font-mono">
+          <span>glimpse.fizx.uk · CoinGecko + bitview · 21s refresh</span>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            {[
+              ['https://fizx.uk',         'fizx.uk'],
+              ['https://glimpse.fizx.uk', 'glimpse'],
+              ['https://pulse.fizx.uk',   'pulse'],
+              ['https://ln.fizx.uk',      'ln'],
+              ['https://stakes.fizx.uk',  'stakes'],
+              ['https://sonic.fizx.uk',   'sonic'],
+            ].map(([href, label]) => (
+              <a key={href} href={href} className="hover:text-primary transition-colors">{label}</a>
+            ))}
+            <span className="text-primary/60 ml-1">✦ built with claude</span>
+          </div>
+        </div>
+      </footer>
+
+    </div>
+  );
+};
+
+export default BitcoinConverter;
